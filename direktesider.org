@@ -1,0 +1,216 @@
+#+STARTUP: fold
+#+STARTUP: indent
+#+EXPORT_FILE_NAME: readme.org
+#+OPTIONS: date: nil
+#+OPTIONS: author: nil
+#+OPTIONS: title: nil
+#+PROPERTY: header-args:python :session *Python* :tangle kode.py :comments both :eval never-export :exports both
+#+PROPERTY: header-args:bigquery :eval never-export :exports both :tangle direktesider.sql
+
+#+begin_src emacs-lisp :exports results :results none
+  ;; Dette gjør om bigquery-blokker til sql-blokker (for å få fargelegging på teksten)
+  ;; og fjerner results-nøkkelordet (som gjemmer resultatene på github)
+  (defun bytt-bigquery-til-sql (s backend info)
+    (replace-regexp-in-string "bigquery" "sql" s))
+
+  (defun fjern-resultatmerke (s backend info)
+    (replace-regexp-in-string "#\\+results:[ ]+" "" s))
+
+  (add-to-list 'org-export-filter-src-block-functions
+    	     'bytt-bigquery-til-sql)
+  (add-to-list 'org-export-filter-body-functions
+    	     'fjern-resultatmerke)
+#+end_src
+
+* Direktesider
+I forbindelse med innsiktsarbeidet knyttet til direktesidene har jeg skrevet spørringen som dokumenteres i dette repoet, for å hjelpe til med å finne noen svar. Spørsmålene dreier seg i hovedsak om hvor mange besøk som er innom direktesidene, hvor mange besøk som har en direkteavspilling og hvordan direkteavspillingen ble startet (fra forsiden, direktesiden, eller et annet sted), og hvor mange som er innom tv-guiden.
+
+For å besvare disse spørsmålene tar spørringen for seg sekvenser på to til tre skjermvisninger og avgjør om sekvensen er blant dem som besvarer et av spørsmålene eller ikke. En sekvens som besvarer et spørsmål, kaller jeg en målsekvens. Deretter teller den opp antall besøk som har hatt en målsekvens. Siden det kan flere ulike sekvenser i løpet av ett besøk, velger spørringen den mest relevante sekvensen. Dette er sekvensen som definerer besøket. La meg eksemplifisere med to sekvenser bestående av:
+1. direktesiden direkte etterfulgt av en direkteavspilling
+2. direktesiden direkte etterfulgt av noe annet enn en direkteavspilling (eller tv-guide)
+
+Dersom et besøk inneholdt den første sekvensen vil besøket defineres av denne og telle med for denne sekvensen i opptellingen. Det samme vil gjelde dersom besøket både hadde den første og den andre sekvensen. Til slutt, et besøk som ikke hadde inneholdt den første sekvensen, men inneholdt den andre ville defineres av den andre sekvensen, og telle med for den i opptellingen.
+
+* Spørringen
+Den første delen av spørringen setter navn klientypene basert på kombinasjonen av plattform og app-id.
+
+************** TODO Lage en funksjon som lager en tabell av arrayen i klienttype_og_navn.
+#+name: klienttype_og_navn
+#+begin_src bigquery
+  WITH
+  KOMBINASJONER_OG_NAVN AS (
+    SELECT *
+      FROM UNNEST(
+        ARRAY<STRUCT<
+        navn STRING, appId STRING, platform STRING>>[
+          ('LG', 'no.nrk.accedo.tv.lg', 'tv'),
+  	('Gammel Tizen', 'no.nrk.accedo.tv.tizen', 'tv'),
+          ('Accedo ws', 'no.nrk.accedo.tv.workstation', 'tv'),
+  	('iOS', 'no.nrk.nrktvapp', 'mob'),
+          ('Apple TV', 'no.nrk.nrktvapp', 'tv'),
+  	('Android mob', 'no.nrk.tv', 'mob'),
+          ('Android TV', 'no.nrk.tv', 'tv'),
+  	('Tizen', 'no.nrk.tv.smart-tv', 'tv'),
+          ('web', 'no.nrk.tv.web', 'web')])),
+#+end_src
+
+Avhenging av app vil navnet på skjermvisningen i noen tilfeller ligge i feltet ~page.path~ og andre tilfeller i ~mobileViewName~. Det første er tilfellet for ~no.nrk.tv.smart-tv~ og ~no.nrk.tv.web~. I denne delen av spørringen limes navnet på skjermvisningen sammen med kanalnavnet dersom kanalen er på formen ~nrk1_*~, ~nrk1_*~, ~nrktv[0-9]~ eller ~nrk[0-9]~. Dette inkluderer NRK1, NRK2, NRK3, NRK Super, NRK tegnspråk og ekstrakanalene. Kanalnavnet finnes i ~page.path~- eller ~content.id~-verdien når det er snakk om en visning av direktesidene, epg-/tv-guide-sidene og avspillersidene. En ~IF~-funksjon velger om informasjonen skal hentes fra ~page.path~ eller ~mobileViewName~ på bakgrunn av app-id-en, og legger det inn i samme kolonne, ~skjerm~.
+************** TODO Lage en funksjon for å hente ut app-id-ene som henter skjermvisningsnavnet fra page.path.
+
+Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få en en ~NULL~-verdi i ~previousViewId~. Dette fører til en diskontinuitet i sekvensen av skjermvisninger, og jeg deler derfor besøket opp i delbesøk etter hver ~NULL~-verdi i en ~previousViewId~ ved hjelp av ~sub_sesjon~.
+#+name: skjermvisninger
+#+begin_src bigquery
+  VIEWID_OG_DIREKTESIDE AS (
+    /* Denne spørringen samler opp dataene som trengs for å senere kunne bygge stiene som 
+       identifiserer turer innom direktesidene.
+       Forklaring til feltene
+         - navn           : navn på kombinasjonen av plattform og appId
+         - appId          : identifiserer iOS-, Android- og Tizen-appene
+         - platfrom       : skiller på tv, mob og web
+         - viewId og      : gjør det mulig å koble sammen stier av skjermvisninger
+           previousViewId 
+         - skjerm         : kombinerer mobileViewName eventuelt med en kanal, se merknad.
+         - side           : kombinerer page.path med eventuelt en kanal
+         - delta_t        : tiden det tar fra besøket startet til denne sidevisningen
+         
+       Merknad: Kanal er basert på conten.id. Regexp-en filtrerer bort verdier som ikke er av
+         typen nrk1, nrk2, nrktv4, nrk_tegnspråk.  
+         */
+    SELECT DISTINCT IFNULL(navn, 'Annet') navn, appId, platform, viewId, previousViewId,
+           IF(appId IN ('no.nrk.tv.smart-tv', 'no.nrk.tv.web'),
+             CASE
+               WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] = 'direkte' AND SPLIT(page.path, '/')[SAFE_OFFSET(3)] = 'avspiller' THEN 
+                 CASE -- Deler opp tilfellene der vi skal ha med kanal
+                   WHEN SPLIT(page.path, '/')[SAFE_OFFSET(2)] LIKE 'nrk1_%' THEN 'avspiller (nrk1)'
+                   WHEN REGEXP_CONTAINS(SPLIT(page.path, '/')[SAFE_OFFSET(2)], r'^nrk(s.+|_|tv\d|\d)+') THEN CONCAT('avspiller (', SPLIT(page.path, '/')[SAFE_OFFSET(2)] , ')')
+                 END
+               WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] = 'direkte' THEN 
+                 CASE
+                   WHEN SPLIT(page.path, '/')[SAFE_OFFSET(2)] LIKE 'nrk1_%' THEN 'direkte (nrk1)'
+                   WHEN REGEXP_CONTAINS(SPLIT(page.path, '/')[SAFE_OFFSET(2)], r'^nrk(s.+|_|tv\d|\d)+') THEN CONCAT('direkte (', SPLIT(page.path, '/')[SAFE_OFFSET(2)] , ')')
+                   ELSE 'direkte'
+                 END
+               WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] = 'epg' THEN 
+                 CASE
+                   WHEN SPLIT(page.path, '/')[SAFE_OFFSET(2)] LIKE 'nrk1_%' THEN 'epg (nrk1)'
+                   WHEN REGEXP_CONTAINS(SPLIT(page.path, '/')[SAFE_OFFSET(2)], r'^nrk(s.+|_|tv\d|\d)+') THEN CONCAT('epg (', SPLIT(page.path, '/')[SAFE_OFFSET(2)] , ')')
+                   ELSE 'epg'
+                 END
+               WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] != '' THEN SPLIT(page.path, '/')[SAFE_OFFSET(1)]
+               WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] = '' THEN 'forsiden'
+             END,
+             CONCAT(mobileViewName,
+               CASE
+                 WHEN content.id LIKE 'nrk1_%' THEN ' (nrk1)'
+                 WHEN REGEXP_CONTAINS(content.id, r'^nrk(_|tv\d|\d)+') THEN CONCAT(' (', content.id, ')')
+                 ELSE ''
+               END)
+           ) skjerm,
+           sessionId, firstTimeStamp, 
+           COUNTIF(previousViewId IS NULL) OVER(PARTITION BY sessionId ORDER BY firstTimeStamp) sub_sesjon,
+      FROM `nrk-datahub.snowplow_processed.views_v02`
+           LEFT JOIN KOMBINASJONER_OG_NAVN USING(appId, platform)
+     WHERE partitionDate = CURRENT_DATE - 2
+       AND nrkService = 'nrktv'
+       AND platform != 'pc'
+       AND appId NOT IN ('no.nrk.nrktvapp.swift', 'no.nrk.goldendelicious.cdntest', 'no.nrk.NRK-Super')),
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  TIDER AS (
+    SELECT *,
+          --  COUNT(DISTINCT viewId) OVER(PARTITION BY sessionId, sub_sesjon) sider,
+           ROW_NUMBER() OVER(PARTITION BY sessionId, sub_sesjon ORDER BY firstTimeStamp) visning,
+           TIMESTAMP_DIFF(firstTimestamp, MIN(firstTimestamp) OVER(PARTITION BY sessionId, sub_sesjon), SECOND) delta_t
+      FROM VIEWID_OG_DIREKTESIDE
+  ),
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  ALLE_STIER AS (
+    /* Her starter masseringen av dataene for iOS og Android. For Tizen foregår det analogt.
+       Spørringen kobler sammen tre skjermvisninger som kommer etter hverandre (stier) og
+       identifiserer tilfeller som er innom direktesiden. Disse grupperes på grunnlag av om 
+       neste skjermvisning var avspilling/tv-guide eller noe annet (bounce). I tillegg kate-
+       goriseres stiene som en ønsketur eller en bomtur avhenging av om andre skjermvisning
+       var avspilling/tv-guide eller ikke.
+       Forklaring av nye felter:
+       - app             : oversetter appId til et mer forståelig navn
+       - sti             : kategoriserer sekvenser av tre skjermvisninger
+       - tur             : ønsketur eller bomtur
+       - tid_til_steg1-3 : tiden fra start av besøket til direkte-skjermvisning osv. */
+    SELECT fv.sessionId, sub_sesjon, navn, fv.skjerm fskjerm, av.skjerm askjerm, tv.skjerm tskjerm,
+           CASE
+             WHEN av.skjerm IS NULL THEN CONCAT(fv.skjerm, ' -> bounce')
+             WHEN tv.skjerm IS NULL THEN CONCAT(fv.skjerm, ' -> ', av.skjerm, ' -> bounce')
+             ELSE CONCAT(fv.skjerm, ' -> ', av.skjerm, ' -> ', tv.skjerm)
+           END sti,
+           CASE
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'avspiller \(.+\)') THEN 'Sesjonsstart'
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'direkte') THEN 'direktesiden'
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'forsiden|frontpage') THEN 'forsiden'
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'Sesjonsstart'
+             ELSE 'annet'
+           END Fra,          
+           CASE
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'(tv-guide|epg)( \(.+\))?') AND REGEXP_CONTAINS(av.skjerm, r'avspiller \(.+\)') THEN 'tv-guide -> avspiller'
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'(tv-guide|epg)( \(.+\))?') AND NOT REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide -> bounce'
+             WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') AND REGEXP_CONTAINS(tv.skjerm, r'avspiller \(.+\)') THEN 'tv-guide -> avspiller'
+             WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') AND NOT REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide -> bounce'
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'avspiller \(.+\)') THEN 'direkteavspilling'
+             WHEN REGEXP_CONTAINS(av.skjerm, r'avspiller \(.+\)') THEN 'direkteavspilling'
+             WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide'
+             ELSE 'bounce'
+           END Til,          
+
+           fv.firstTimeStamp tid_skjerm1, av.firstTimeStamp tid_skjerm2,
+           fv.delta_t tid_til_steg1,
+           av.delta_t tid_til_steg2,
+      FROM TIDER fv
+            LEFT JOIN (SELECT sessionId, previousViewId, firstTimeStamp, viewId, skjerm, delta_t FROM TIDER) av ON fv.viewId = av.previousViewId AND fv.sessionId = av.sessionId
+            LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId
+            ),
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  GOALS AS (
+    SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, tid_skjerm1, sub_sesjon,
+           REGEXP_EXTRACT(sti, r'\((.+?)\)') kanal,
+           Til IN ('direkteavspilling', 'tv-guide -> avspiller', 'tv-guide') `hovedmål`,
+           (Fra = 'direktesiden' AND Til = 'bounce') OR Til = 'tv-guide -> bounce' `alternativt mål`
+      FROM ALLE_STIER
+  ),
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  FLAGGET AS (
+    SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, `hovedmål`, `alternativt mål`,
+           tid_skjerm1 = MIN(tid_skjerm1) OVER(PARTITION BY sessionId, sub_sesjon, `hovedmål`, `alternativt mål`) goal1
+      FROM GOALS
+  ),
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  FLAGGET2 AS (
+    SELECT DISTINCT *,
+          (LOGICAL_OR(`hovedmål`) OVER(PARTITION BY sessionId) AND `hovedmål` AND goal1) OR (NOT LOGICAL_OR(`hovedmål`) OVER(PARTITION BY sessionId) AND `alternativt mål`) flagg
+      FROM FLAGGET
+  )
+#+end_src
+
+#+name: 
+#+begin_src bigquery
+  SELECT DISTINCT navn, Fra, Til,
+         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til) `Antall besøk`,
+         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til) / COUNT(sessionId) OVER(PARTITION BY navn) `Andel av alle besøk`,
+    FROM FLAGGET2
+   WHERE flagg 
+    --  AND Til = 'direkteavspilling'
+    --  AND Fra = 'direktesiden'
+  ORDER BY 1, 4 DESC
+#+end_src
