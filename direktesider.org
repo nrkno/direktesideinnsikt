@@ -1,5 +1,4 @@
 #+STARTUP: fold
-#+STARTUP: indent
 #+EXPORT_FILE_NAME: readme.org
 #+OPTIONS: date: nil
 #+OPTIONS: author: nil
@@ -65,18 +64,18 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
        identifiserer turer innom direktesidene.
        Forklaring til feltene
          - navn           : navn på kombinasjonen av plattform og appId
-         - appId          : identifiserer iOS-, Android- og Tizen-appene
-         - platfrom       : skiller på tv, mob og web
-         - viewId og      : gjør det mulig å koble sammen stier av skjermvisninger
+         - viewId og      : gjør det mulig å koble sammen sekvenser av skjermvisninger
            previousViewId 
-         - skjerm         : kombinerer mobileViewName eventuelt med en kanal, se merknad.
-         - side           : kombinerer page.path med eventuelt en kanal
-         - delta_t        : tiden det tar fra besøket startet til denne sidevisningen
+         - skjerm         : kombinerer mobileViewName eller page.path eventuelt med en kanal,
+                            og bearbeider page.path til å ligne mer på mobileViewName,se merknad.
+         - sessionId      : identifiserer besøket
+         - firstTimeStamp : brukes til å beregne hvor langt ut i besøket skjermvisningen fant sted
+         - sub_sesjon     : deler et besøk opp i underbesøk basert på at previousViewId er NULL
          
        Merknad: Kanal er basert på conten.id. Regexp-en filtrerer bort verdier som ikke er av
          typen nrk1, nrk2, nrktv4, nrk_tegnspråk.  
-         */
-    SELECT DISTINCT IFNULL(navn, 'Annet') navn, appId, platform, viewId, previousViewId,
+         ,*/
+    SELECT DISTINCT IFNULL(navn, 'Annet') navn, viewId, previousViewId,
            IF(appId IN ('no.nrk.tv.smart-tv', 'no.nrk.tv.web'),
              CASE
                WHEN SPLIT(page.path, '/')[SAFE_OFFSET(1)] = 'direkte' AND SPLIT(page.path, '/')[SAFE_OFFSET(3)] = 'avspiller' THEN 
@@ -116,22 +115,37 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
        AND appId NOT IN ('no.nrk.nrktvapp.swift', 'no.nrk.goldendelicious.cdntest', 'no.nrk.NRK-Super')),
 #+end_src
 
-#+name: 
+I neste del av spørringen beregnes det hvor lang tid det tar fra første skjermvisning i besøket til gjeldende skjermvisning.
+#+name: tidsmåling
 #+begin_src bigquery
+  /*
+     Her beregnes det hvor lang tid det tar fra første skjermvisning i besøket til den gjeldende
+     skjermvisningen.
+     - delta_t        : tiden det tar fra besøket startet til denne sidevisningen
+  */
   TIDER AS (
     SELECT *,
-          --  COUNT(DISTINCT viewId) OVER(PARTITION BY sessionId, sub_sesjon) sider,
-           ROW_NUMBER() OVER(PARTITION BY sessionId, sub_sesjon ORDER BY firstTimeStamp) visning,
            TIMESTAMP_DIFF(firstTimestamp, MIN(firstTimestamp) OVER(PARTITION BY sessionId, sub_sesjon), SECOND) delta_t
-      FROM VIEWID_OG_DIREKTESIDE
-  ),
+      FROM VIEWID_OG_DIREKTESIDE),
 #+end_src
 
-#+name: 
+Neste del av spørringen bearbeider sekvenser på to til tre skjermvisninger. Disse sekvensene blir kodet inn i to kolonner, Fra og Til. Denne bearbeidingen skal hjelpe meg med å identifisere følgende tilfeller:
+1. Besøk som er innom en direkteavspilling og om de kom dit fra
+   1) direktesidene
+   2) forsiden
+   3) tv-guiden
+   4) noe annet (kategorisider, etc.)
+2. Besøk som er innom direktesidene og derfra går til
+   1) tv-guiden
+   2) direkteavspilling
+   3) noe annet (bounce)
+
+Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning, viser jeg det ved å si at Fra er lik "Sesjonsstart". I tillegg viser hva som følger etter en tv-guide-skjermvisning som enten "tv-guide (kanalnavn) -> avspiller", "tv-guide (kanalnavn) -> bounce" eller "tv-guide (kanalnavn)". Bounce vil si at neste skjermvisning har navigert bort fra tv-guide og er ikke en avspilling. "tv-guide (kanalnavn)" vil si at neste skjermvisning også var tv-guide, og jeg har ikke tatt meg bryet med å finne ut hva som har skjedd videre nedover sekvensen.
+
+#+name: skjermvisningssekvenser
 #+begin_src bigquery
   ALLE_STIER AS (
-    /* Her starter masseringen av dataene for iOS og Android. For Tizen foregår det analogt.
-       Spørringen kobler sammen tre skjermvisninger som kommer etter hverandre (stier) og
+    /* Spørringen kobler sammen tre skjermvisninger som kommer etter hverandre (stier) og
        identifiserer tilfeller som er innom direktesiden. Disse grupperes på grunnlag av om 
        neste skjermvisning var avspilling/tv-guide eller noe annet (bounce). I tillegg kate-
        goriseres stiene som en ønsketur eller en bomtur avhenging av om andre skjermvisning
@@ -158,7 +172,7 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
              WHEN REGEXP_CONTAINS(fv.skjerm, r'(tv-guide|epg)( \(.+\))?') AND REGEXP_CONTAINS(av.skjerm, r'avspiller \(.+\)') THEN 'tv-guide -> avspiller'
              WHEN REGEXP_CONTAINS(fv.skjerm, r'(tv-guide|epg)( \(.+\))?') AND NOT REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide -> bounce'
              WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') AND REGEXP_CONTAINS(tv.skjerm, r'avspiller \(.+\)') THEN 'tv-guide -> avspiller'
-             WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') AND NOT REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide -> bounce'
+             WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') AND NOT REGEXP_CONTAINS(tv.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide -> bounce'
              WHEN REGEXP_CONTAINS(fv.skjerm, r'avspiller \(.+\)') THEN 'direkteavspilling'
              WHEN REGEXP_CONTAINS(av.skjerm, r'avspiller \(.+\)') THEN 'direkteavspilling'
              WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide'
@@ -174,7 +188,9 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
             ),
 #+end_src
 
-#+name: 
+Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisninger. Den brukes kun for å hente ut kanalnavnet, og er blitt brukt til debuging under skrivingen av spørringen. Den kan være lurt å fjerne den og bruke noe annet for å hente kanalnavn.
+
+#+name: måldefinering_nivå1
 #+begin_src bigquery
   GOALS AS (
     SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, tid_skjerm1, sub_sesjon,
@@ -185,7 +201,7 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
   ),
 #+end_src
 
-#+name: 
+#+name: måldefinering_nivå2
 #+begin_src bigquery
   FLAGGET AS (
     SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, `hovedmål`, `alternativt mål`,
@@ -194,7 +210,7 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
   ),
 #+end_src
 
-#+name: 
+#+name: måldefinering_nivå3
 #+begin_src bigquery
   FLAGGET2 AS (
     SELECT DISTINCT *,
@@ -203,7 +219,7 @@ Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få 
   )
 #+end_src
 
-#+name: 
+#+name: resultat
 #+begin_src bigquery
   SELECT DISTINCT navn, Fra, Til,
          COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til) `Antall besøk`,
