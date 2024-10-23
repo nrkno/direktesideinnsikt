@@ -33,6 +33,18 @@ Dersom et besøk inneholdt den første sekvensen vil besøket defineres av denne
 * Spørringen
 Den første delen av spørringen setter navn klientypene basert på kombinasjonen av plattform og app-id.
 
+| navn         | app-id                       | plattform |
+|--------------+------------------------------+-----------|
+| LG           | no.nrk.accedo.tv.lg          | tv        |
+| Gammel Tizen | no.nrk.accedo.tv.tizen       | tv        |
+| Accedo ws    | no.nrk.accedo.tv.workstation | tv        |
+| iOS          | no.nrk.nrktvapp              | mob       |
+| Apple TV     | no.nrk.nrktvapp              | tv        |
+| Android mob  | no.nrk.tv                    | mob       |
+| Android TV   | no.nrk.tv                    | tv        |
+| Tizen        | no.nrk.tv.smart-tv           | tv        |
+| web          | no.nrk.tv.web                | web       |
+
 ************** TODO Lage en funksjon som lager en tabell av arrayen i klienttype_og_navn.
 #+name: klienttype_og_navn
 #+begin_src bigquery
@@ -43,13 +55,13 @@ Den første delen av spørringen setter navn klientypene basert på kombinasjone
         ARRAY<STRUCT<
         navn STRING, appId STRING, platform STRING>>[
           ('LG', 'no.nrk.accedo.tv.lg', 'tv'),
-  	('Gammel Tizen', 'no.nrk.accedo.tv.tizen', 'tv'),
+          ('Gammel Tizen', 'no.nrk.accedo.tv.tizen', 'tv'),
           ('Accedo ws', 'no.nrk.accedo.tv.workstation', 'tv'),
-  	('iOS', 'no.nrk.nrktvapp', 'mob'),
+          ('iOS', 'no.nrk.nrktvapp', 'mob'),
           ('Apple TV', 'no.nrk.nrktvapp', 'tv'),
-  	('Android mob', 'no.nrk.tv', 'mob'),
+          ('Android mob', 'no.nrk.tv', 'mob'),
           ('Android TV', 'no.nrk.tv', 'tv'),
-  	('Tizen', 'no.nrk.tv.smart-tv', 'tv'),
+          ('Tizen', 'no.nrk.tv.smart-tv', 'tv'),
           ('web', 'no.nrk.tv.web', 'web')])),
 #+end_src
 
@@ -184,12 +196,12 @@ Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning
            av.delta_t tid_til_steg2,
       FROM TIDER fv
             LEFT JOIN (SELECT sessionId, previousViewId, firstTimeStamp, viewId, skjerm, delta_t FROM TIDER) av ON fv.viewId = av.previousViewId AND fv.sessionId = av.sessionId
-            LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId
-            ),
+            LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId),
 #+end_src
 
 Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisninger. Den brukes kun for å hente ut kanalnavnet, og er blitt brukt til debuging under skrivingen av spørringen. Den kan være lurt å fjerne den og bruke noe annet for å hente kanalnavn.
 
+Resten av spørringen oppretter en rekke boolske kolonner for å til slutt velge ut radene som skal være tellende, og returnerer resultatet. Den første delen legger til kanal basert på hva den finner i sti-kolonnen. Deretter definerer den en kolonne ~hovedmål~ som er sann hvis Til er "direkteavspilling", "tv-guide -> avspillier", eller "tv-guide". Deretter definerer den en kolonnne ~alternativt mål~ som er sann hvis Fra er "direktesiden" og Til er "bounce" eller Til er "tv-guide -> bounce".  
 #+name: måldefinering_nivå1
 #+begin_src bigquery
   GOALS AS (
@@ -201,23 +213,26 @@ Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisn
   ),
 #+end_src
 
+Den neste delen definerer en boolsk kolonne ~oppnådd hovedmål~ som er sann for alle rader i et besøk dersom hovedmålet er blitt oppnådd. Den definerer også en boolsk kolonne ~goal1~ som er sann hvis tidsmålet ~tid_skjerm1~ for en gitt kombinasjon av et besøk,  ~hovedmål~ og ~alternativt mål~ er lik minimumsmålet for denne kombinasjonen. På denne måten identifiseres det første tilfellet som oppfyller hovedmålet eller alternativ mål.
 #+name: måldefinering_nivå2
 #+begin_src bigquery
   FLAGGET AS (
     SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, `hovedmål`, `alternativt mål`,
+           LOGICAL_OR(`hovedmål`) OVER(PARTITION BY sessionId, sub_sesjon) `oppnådd hovedmål`,
            tid_skjerm1 = MIN(tid_skjerm1) OVER(PARTITION BY sessionId, sub_sesjon, `hovedmål`, `alternativt mål`) goal1
-      FROM GOALS
-  ),
+      FROM GOALS),
 #+end_src
 
+Videre oppretter denne delen en kolonne ~flagg~ som er sann for det første tilfellet av hovedmål eller alternativt mål, der hovedmålet trumfer alternativt mål. Besøk hvor ingen av målene er oppnådd tas ikke med til slutt.
 #+name: måldefinering_nivå3
 #+begin_src bigquery
   FLAGGET2 AS (
     SELECT DISTINCT *,
-          (LOGICAL_OR(`hovedmål`) OVER(PARTITION BY sessionId) AND `hovedmål` AND goal1) OR (NOT LOGICAL_OR(`hovedmål`) OVER(PARTITION BY sessionId) AND `alternativt mål`) flagg
-      FROM FLAGGET
-  )
+           (`oppnådd hovedmål` AND `hovedmål` AND goal1) OR (NOT `oppnådd hovedmål` AND `alternativt mål` AND goal1) flagg
+      FROM FLAGGET)
 #+end_src
+
+Her beregnes reulstatet. Ved å filtrere på Til og Fra kan man beregne hvor stor andel som har vært innom direktesidene uten å gjøre en direkteavspilling eller besøke tv-guiden, eller hvor stor andel som har hatt en direkteavspilling fra ulike innganger.
 
 #+name: resultat
 #+begin_src bigquery
