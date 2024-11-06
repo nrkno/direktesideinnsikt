@@ -190,13 +190,19 @@ Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning
              WHEN REGEXP_CONTAINS(av.skjerm, r'(tv-guide|epg)( \(.+\))?') THEN 'tv-guide'
              ELSE 'bounce'
            END Til,          
-
+  	 CASE
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'avspiller \(.+\)') THEN REGEXP_EXTRACT(fv.skjerm, r'\((.+)\)')
+             WHEN REGEXP_CONTAINS(av.skjerm, r'avspiller \(.+\)') THEN REGEXP_EXTRACT(av.skjerm, r'\((.+)\)')
+             WHEN REGEXP_CONTAINS(tv.skjerm, r'avspiller \(.+\)') THEN REGEXP_EXTRACT(tv.skjerm, r'\((.+)\)')
+             WHEN REGEXP_CONTAINS(fv.skjerm, r'.+ \(.+\)') THEN REGEXP_EXTRACT(fv.skjerm, r'\((.+)\)')
+             ELSE REGEXP_EXTRACT(av.skjerm, r'\((.+)\)')
+  	 END kanal,
            fv.firstTimeStamp tid_skjerm1, av.firstTimeStamp tid_skjerm2,
            fv.delta_t tid_til_steg1,
            av.delta_t tid_til_steg2,
       FROM TIDER fv
-            LEFT JOIN (SELECT sessionId, previousViewId, firstTimeStamp, viewId, skjerm, delta_t FROM TIDER) av ON fv.viewId = av.previousViewId AND fv.sessionId = av.sessionId
-            LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId),
+           LEFT JOIN (SELECT sessionId, previousViewId, firstTimeStamp, viewId, skjerm, delta_t FROM TIDER) av ON fv.viewId = av.previousViewId AND fv.sessionId = av.sessionId
+           LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId),
 #+end_src
 
 Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisninger. Den brukes kun for å hente ut kanalnavnet, og er blitt brukt til debuging under skrivingen av spørringen. Den kan være lurt å fjerne den og bruke noe annet for å hente kanalnavn.
@@ -205,8 +211,7 @@ Resten av spørringen oppretter en rekke boolske kolonner for å til slutt velge
 #+name: måldefinering_nivå1
 #+begin_src bigquery
   GOALS AS (
-    SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, tid_skjerm1, sub_sesjon,
-           REGEXP_EXTRACT(sti, r'\((.+?)\)') kanal,
+    SELECT DISTINCT sessionId, navn, Fra, Til, tid_til_steg1, tid_skjerm1, sub_sesjon, kanal,
            Til IN ('direkteavspilling', 'tv-guide -> avspiller', 'tv-guide') `hovedmål`,
            (Fra = 'direktesiden' AND Til = 'bounce') OR Til = 'tv-guide -> bounce' `alternativt mål`
       FROM ALLE_STIER
@@ -232,16 +237,16 @@ Videre oppretter denne delen en kolonne ~flagg~ som er sann for det første tilf
       FROM FLAGGET)
 #+end_src
 
-Her beregnes reulstatet. Ved å filtrere på Til og Fra kan man beregne hvor stor andel som har vært innom direktesidene uten å gjøre en direkteavspilling eller besøke tv-guiden, eller hvor stor andel som har hatt en direkteavspilling fra ulike innganger.
+Her beregnes reulstatet. Ved å filtrere på Til og Fra kan man beregne hvor stor andel som har vært innom direktesidene uten å gjøre en direkteavspilling eller besøke tv-guiden, eller hvor stor andel som har hatt en direkteavspilling fra ulike innganger. For å få en oversikt over hvilke kanaler som spilles av, kan man kommentere ut ~Fra~ og ~Til~, og kommentere inn ~kanal~. Samtidig må man filtrere på ~Fra = 'direktesiden'~
 
 #+name: resultat
 #+begin_src bigquery
-  SELECT DISTINCT navn, Fra, Til,
-         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til) `Antall besøk`,
-         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til) / COUNT(sessionId) OVER(PARTITION BY navn) `Andel av alle besøk`,
+  SELECT DISTINCT navn, Fra, Til, --kanal
+         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til/*, kanal*/) `Antall besøk`,
+         COUNT(sessionId) OVER(PARTITION BY navn, Fra, Til/*, kanal*/) / COUNT(sessionId) OVER(PARTITION BY navn) `Andel av alle besøk`,
     FROM FLAGGET2
    WHERE flagg 
     --  AND Til = 'direkteavspilling'
     --  AND Fra = 'direktesiden'
-  ORDER BY 1, 4 DESC
+  ORDER BY 1, 2, 3
 #+end_src
