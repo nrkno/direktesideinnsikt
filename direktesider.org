@@ -31,7 +31,7 @@ For å besvare disse spørsmålene tar spørringen for seg sekvenser på to til 
 Dersom et besøk inneholdt den første sekvensen vil besøket defineres av denne og telle med for denne sekvensen i opptellingen. Det samme vil gjelde dersom besøket både hadde den første og den andre sekvensen. Til slutt, et besøk som ikke hadde inneholdt den første sekvensen, men inneholdt den andre ville defineres av den andre sekvensen, og telle med for den i opptellingen.
 
 * Spørringen
-Den første delen av spørringen setter navn klientypene basert på kombinasjonen av plattform og app-id.
+Den første delen av spørringen setter navnet på klientypene basert på kombinasjonen av plattform og app-id.
 
 | navn         | app-id                       | plattform |
 |--------------+------------------------------+-----------|
@@ -68,7 +68,7 @@ Den første delen av spørringen setter navn klientypene basert på kombinasjone
 Avhenging av app vil navnet på skjermvisningen i noen tilfeller ligge i feltet ~page.path~ og andre tilfeller i ~mobileViewName~. Det første er tilfellet for ~no.nrk.tv.smart-tv~ og ~no.nrk.tv.web~. I denne delen av spørringen limes navnet på skjermvisningen sammen med kanalnavnet dersom kanalen er på formen ~nrk1_*~, ~nrk1_*~, ~nrktv[0-9]~ eller ~nrk[0-9]~. Dette inkluderer NRK1, NRK2, NRK3, NRK Super, NRK tegnspråk og ekstrakanalene. Kanalnavnet finnes i ~page.path~- eller ~content.id~-verdien når det er snakk om en visning av direktesidene, epg-/tv-guide-sidene og avspillersidene. En ~IF~-funksjon velger om informasjonen skal hentes fra ~page.path~ eller ~mobileViewName~ på bakgrunn av app-id-en, og legger det inn i samme kolonne, ~skjerm~.
 ************** TODO Lage en funksjon for å hente ut app-id-ene som henter skjermvisningsnavnet fra page.path.
 
-Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få en en ~NULL~-verdi i ~previousViewId~. Dette fører til en diskontinuitet i sekvensen av skjermvisninger, og jeg deler derfor besøket opp i delbesøk etter hver ~NULL~-verdi i en ~previousViewId~ ved hjelp av ~sub_sesjon~.
+Noen app-er vil beholde samme ~sessionId~, som identifiserer et besøk, men få en ~NULL~-verdi i ~previousViewId~. Dette fører til en diskontinuitet i sekvensen av skjermvisninger, og jeg deler derfor besøket opp i delbesøk etter hver ~NULL~-verdi i en ~previousViewId~ ved hjelp av ~sub_sesjon~.
 #+name: skjermvisninger
 #+begin_src bigquery
   VIEWID_OG_DIREKTESIDE AS (
@@ -142,7 +142,7 @@ I neste del av spørringen beregnes det hvor lang tid det tar fra første skjerm
 #+end_src
 
 Neste del av spørringen bearbeider sekvenser på to til tre skjermvisninger. Disse sekvensene blir kodet inn i to kolonner, Fra og Til. Denne bearbeidingen skal hjelpe meg med å identifisere følgende tilfeller:
-1. Besøk som er innom en direkteavspilling og om de kom dit fra
+1. Besøk som er innom en direkteavspilling, og om de kom dit fra
    1) direktesidene
    2) forsiden
    3) tv-guiden
@@ -152,7 +152,7 @@ Neste del av spørringen bearbeider sekvenser på to til tre skjermvisninger. Di
    2) direkteavspilling
    3) noe annet (bounce)
 
-Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning, viser jeg det ved å si at Fra er lik "Sesjonsstart". I tillegg viser hva som følger etter en tv-guide-skjermvisning som enten "tv-guide (kanalnavn) -> avspiller", "tv-guide (kanalnavn) -> bounce" eller "tv-guide (kanalnavn)". Bounce vil si at neste skjermvisning har navigert bort fra tv-guide og er ikke en avspilling. "tv-guide (kanalnavn)" vil si at neste skjermvisning også var tv-guide, og jeg har ikke tatt meg bryet med å finne ut hva som har skjedd videre nedover sekvensen.
+Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning, viser jeg det ved å si at Fra er lik "Sesjonsstart". I tillegg vises hva som følger etter en tv-guide-skjermvisning som enten "tv-guide (kanalnavn) -> avspiller", "tv-guide (kanalnavn) -> bounce" eller "tv-guide (kanalnavn)". Bounce vil si at neste skjermvisning har navigert bort fra tv-guide, og er ikke en avspilling. "tv-guide (kanalnavn)" vil si at neste skjermvisning også var tv-guide, og jeg har ikke tatt meg bryet med å finne ut hva som har skjedd videre nedover sekvensen av skjermvisninger.
 
 #+name: skjermvisningssekvenser
 #+begin_src bigquery
@@ -205,9 +205,9 @@ Dersom besøket starter med en direkteavspilling eller en tv-guide-skjermvisning
            LEFT JOIN (SELECT sessionId, previousViewId, viewId, skjerm, delta_t FROM TIDER) tv ON av.viewId = tv.previousViewId AND fv.sessionId = tv.sessionId),
 #+end_src
 
-Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisninger. Den brukes kun for å hente ut kanalnavnet, og er blitt brukt til debuging under skrivingen av spørringen. Den kan være lurt å fjerne den og bruke noe annet for å hente kanalnavn.
+Kolonnen ~sti~ er en konkatenering av en skjermvisningsekvens på tre skjermvisninger. Den brukes kun for å hente ut kanalnavnet, og er blitt brukt til debuging under skrivingen av spørringen. Det kan være lurt å fjerne den og bruke noe annet for å hente kanalnavn. Dette gjør jeg også i den nyeste verjsonen av spørringen, men jeg lar ~sti~ fortsatt ligge i spørringen.
 
-Resten av spørringen oppretter en rekke boolske kolonner for å til slutt velge ut radene som skal være tellende, og returnerer resultatet. Den første delen legger til kanal basert på hva den finner i sti-kolonnen. Deretter definerer den en kolonne ~hovedmål~ som er sann hvis Til er "direkteavspilling", "tv-guide -> avspillier", eller "tv-guide". Deretter definerer den en kolonnne ~alternativt mål~ som er sann hvis Fra er "direktesiden" og Til er "bounce" eller Til er "tv-guide -> bounce".  
+Resten av spørringen oppretter en rekke boolske kolonner for å til slutt velge ut radene som skal være tellende, og returnerer resultatet. Dette gjøres ved å definere en kolonne ~hovedmål~ som er sann hvis Til er "direkteavspilling", "tv-guide -> avspillier", eller "tv-guide". Deretter definerer den en kolonnne ~alternativt mål~ som er sann hvis Fra er "direktesiden" og Til er "bounce" eller Til er "tv-guide -> bounce".  
 #+name: måldefinering_nivå1
 #+begin_src bigquery
   GOALS AS (
@@ -218,7 +218,7 @@ Resten av spørringen oppretter en rekke boolske kolonner for å til slutt velge
   ),
 #+end_src
 
-Den neste delen definerer en boolsk kolonne ~oppnådd hovedmål~ som er sann for alle rader i et besøk dersom hovedmålet er blitt oppnådd. Den definerer også en boolsk kolonne ~goal1~ som er sann hvis tidsmålet ~tid_skjerm1~ for en gitt kombinasjon av et besøk,  ~hovedmål~ og ~alternativt mål~ er lik minimumsmålet for denne kombinasjonen. På denne måten identifiseres det første tilfellet som oppfyller hovedmålet eller alternativ mål.
+Den neste delen definerer en boolsk kolonne ~oppnådd hovedmål~ som er sann for alle rader i et besøk dersom hovedmålet er blitt oppnådd. Den definerer også en boolsk kolonne ~goal1~ som er sann hvis tidsmålet ~tid_skjerm1~ for en gitt kombinasjon av et besøk, ~hovedmål~ og ~alternativt mål~ er lik minimumsmålet for denne kombinasjonen. På denne måten identifiseres det første tilfellet som oppfyller hovedmålet eller alternativ mål.
 #+name: måldefinering_nivå2
 #+begin_src bigquery
   FLAGGET AS (
@@ -228,7 +228,7 @@ Den neste delen definerer en boolsk kolonne ~oppnådd hovedmål~ som er sann for
       FROM GOALS),
 #+end_src
 
-Videre oppretter denne delen en kolonne ~flagg~ som er sann for det første tilfellet av hovedmål eller alternativt mål, der hovedmålet trumfer alternativt mål. Besøk hvor ingen av målene er oppnådd tas ikke med til slutt.
+Videre oppretter denne delen en kolonne ~flagg~ som er sann for det første tilfellet av hovedmål eller alternativt mål, der hovedmålet trumfer alternativt mål. Dermed vil et besøk som oppfyller begge målene telle som et besøk som oppfyller hovedmålet. Besøk hvor ingen av målene er oppnådd tas ikke med til slutt.
 #+name: måldefinering_nivå3
 #+begin_src bigquery
   FLAGGET2 AS (
